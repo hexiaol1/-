@@ -39,7 +39,7 @@ def process_single_well(time_days, rate_data, q_ab=0.5):
 # ==========================================
 # 页面全局配置与 Session 初始化
 # ==========================================
-st.set_page_config(page_title="全栈式页岩气产能评价平台", layout="wide")
+st.set_page_config(page_title="全栈式页岩气产能预测", layout="wide")
 
 if 'processed_data' not in st.session_state: st.session_state.processed_data = None
 if 'model_eur' not in st.session_state: st.session_state.model_eur = None
@@ -49,7 +49,7 @@ if 'scaler' not in st.session_state: st.session_state.scaler = None
 if 'features' not in st.session_state: st.session_state.features = []
 if 'feature_stats' not in st.session_state: st.session_state.feature_stats = {}
 
-st.title("📊 全栈式页岩气产能评价与预测平台")
+st.title("📊 全栈式页岩气产能预测（成都理工大学）")
 st.caption("端到端闭环：历史生产数据物理提取 ➔ 多目标 AI 建模 ➔ 物理经济双截断预测")
 
 tab1, tab2, tab3, tab4 = st.tabs(["1. 数据预处理引擎", "2. 多目标模型训练", "3. 静动耦合产能评估", "4. 数据格式说明"])
