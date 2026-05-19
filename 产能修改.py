@@ -1,111 +1,88 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
-from scipy.optimize import curve_fit
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+import joblib
+import io
 
-# 设置页面布局宽度为宽屏模式
-st.set_page_config(page_title="页岩气单井产能预测看板", layout="wide")
+# 设置页面配置
+st.set_page_config(page_title="页岩气产能智能预测系统", layout="wide")
 
+# 初始化 Session State 存储模型
+if 'model' not in st.session_state:
+    st.session_state.model = None
+if 'scaler' not in st.session_state:
+    st.session_state.scaler = None
 
-# ==========================================
-# 1. 数学模型定义区
-# ==========================================
-def duong_model(t, qi, a, m):
-    """标准的 Duong 递减模型"""
-    # 避免除以 0 或无穷大
-    t = np.where(t == 0, 1e-5, t)
-    rate = qi * (t ** -m) * np.exp((a / (1 - m)) * ((t ** (1 - m)) - 1))
-    return rate
+st.title("📊 页岩气产能主控因素与智能预测平台")
 
+tab1, tab2, tab3 = st.tabs(["1. 训练与主控分析", "2. 参数预测 (EUR)", "3. 部署说明"])
 
-# ==========================================
-# 2. 侧边栏：数据导入与参数配置
-# ==========================================
-st.sidebar.header("⚙️ 数据与参数设置")
+# --- TAB 1: 训练与主控分析 ---
+with tab1:
+    st.subheader("模型训练：揭示常压页岩气主控因素")
+    train_file = st.file_uploader("上传已投产井历史数据 (CSV)", type=['csv'],
+                                  help="需包含列: pressure_coeff, toc, sand_intensity, dist_to_fault, eur")
 
-# 文件上传模块
-uploaded_file = st.sidebar.file_uploader("1. 上传测试井/邻井生产数据 (CSV)", type=['csv'])
+    if train_file:
+        df = pd.read_csv(train_file)
+        features = ['pressure_coeff', 'toc', 'sand_intensity', 'dist_to_fault']
+        target = 'eur'
 
-# 经验参数滑块
-st.sidebar.subheader("2. 蒙特卡洛模拟参数")
-mc_runs = st.sidebar.number_input("模拟次数", min_value=100, max_value=5000, value=1000, step=100)
-q_ab = st.sidebar.number_input("废弃产量 (万方/天)", value=1.0, step=0.1)
-qi_variance = st.sidebar.slider("初期产能不确定性波动 (%)", 5, 50, 20)
+        if st.button("运行训练 & 因子分析"):
+            # 数据预处理
+            X = df[features]
+            y = df[target]
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
 
-# ==========================================
-# 3. 主界面：核心工作流执行
-# ==========================================
-st.title("📊 页岩气单井产能及 EUR 预测评估系统")
+            # 训练模型
+            model = RandomForestRegressor(n_estimators=200, random_state=42)
+            model.fit(X_scaled, y)
 
-if uploaded_file is not None:
-    # 读取数据（假设包含 'Days' 和 'Rate_万方' 两列）
-    df = pd.read_csv(uploaded_file)
-    t_data = df['Days'].values
-    q_data = df['Rate_万方'].values
+            # 保存到 Session
+            st.session_state.model = model
+            st.session_state.scaler = scaler
 
-    st.subheader("步骤一：生产动态数据与 Duong 模型拟合")
+            st.success("模型训练成功！")
 
-    # 使用 SciPy 进行非线性曲线拟合
-    try:
-        # 提供初始猜测值 [qi, a, m]
-        popt, pcov = curve_fit(duong_model, t_data, q_data, p0=[20, 1.1, 1.2], bounds=(0, [100, 5, 5]))
-        fitted_qi, fitted_a, fitted_m = popt
-
-        # 布局：分两列展示拟合参数和图表
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            st.success("模型拟合成功！")
-            st.metric("初期产量 (qi)", f"{fitted_qi:.2f} 万方/d")
-            st.metric("参数 a", f"{fitted_a:.4f}")
-            st.metric("参数 m", f"{fitted_m:.4f}")
-
-        with col2:
-            # 使用 Plotly 绘制高可交互图表
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=t_data, y=q_data, mode='markers', name='实际生产数据'))
-            # 生成 10 年预测时间轴
-            t_pred = np.linspace(1, 3650, 500)
-            q_pred = duong_model(t_pred, fitted_qi, fitted_a, fitted_m)
-            fig.add_trace(go.Scatter(x=t_pred, y=q_pred, mode='lines', name='Duong 模型预测', line=dict(color='red')))
-            fig.update_layout(title="单井产量递减历史拟合与预测", xaxis_title="生产时间 (天)",
-                              yaxis_title="日产量 (万方/天)")
+            # 主控因素分析 (Feature Importance)
+            importances = pd.DataFrame({'特征参数': features, '权重': model.feature_importances_})
+            fig = px.bar(importances, x='权重', y='特征参数', orientation='h', title="主控因素权重分析 (基于随机森林)")
             st.plotly_chart(fig, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"拟合失败: {e}")
+# --- TAB 2: 参数预测 ---
+with tab2:
+    st.subheader("单井 EUR 预测")
+    if st.session_state.model is None:
+        st.warning("请先在 Tab 1 完成模型训练。")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            pc = st.number_input("压力系数", value=1.0)
+            toc = st.number_input("TOC (%)", value=2.5)
+        with col2:
+            si = st.number_input("加砂强度 (t/m)", value=2.5)
+            dtf = st.number_input("距断层距离 (m)", value=500)
 
-    # ------------------------------------------
-    # 步骤二：蒙特卡洛 EUR 评估
-    # ------------------------------------------
-    st.subheader("步骤二：EUR 不确定性分析 (P10 / P50 / P90)")
+        if st.button("预测 EUR"):
+            input_data = np.array([[pc, toc, si, dtf]])
+            scaled_input = st.session_state.scaler.transform(input_data)
+            pred_eur = st.session_state.model.predict(scaled_input)
+            st.metric("预测最终可采储量 (EUR)", f"{pred_eur[0]:.2f} 亿方")
 
-    if st.button("🚀 运行蒙特卡洛模拟"):
-        with st.spinner("正在执行随机采样与积分计算..."):
-            # 以拟合出的 qi 为均值，生成正态分布的随机 qi 样本
-            std_dev = fitted_qi * (qi_variance / 100.0)
-            qi_samples = np.random.normal(loc=fitted_qi, scale=std_dev, size=mc_runs)
+# --- TAB 3: 部署与使用建议 ---
+with tab3:
+    st.markdown("""
+    ### 平台功能说明
+    1. **数据驱动**：本模型基于随机森林回归，自动处理非线性映射。
+    2. **物理/统计结合**：通过 `StandardScaler` 处理量纲差异，确保地质参数与工程参数在同一维度分析。
+    3. **主控因素揭示**：通过特征重要性排序，直接量化保存条件（断层）与储层品质的相对影响力。
 
-            eur_results = []
-            for qi_sim in qi_samples:
-                if qi_sim <= 0: continue
-                # 简单积分逻辑：从第 1 天积分到 10 年，或者当产量跌破废弃产量时截断
-                t_sim = np.arange(1, 3651)
-                q_sim = duong_model(t_sim, qi_sim, fitted_a, fitted_m)
-                valid_q = q_sim[q_sim >= q_ab]
-                eur = np.sum(valid_q) / 10000.0  # 假设累加转换为亿方
-                eur_results.append(eur)
-
-            eur_array = np.array(eur_results)
-            p90 = np.percentile(eur_array, 10)
-            p50 = np.percentile(eur_array, 50)
-            p10 = np.percentile(eur_array, 90)
-
-            # 展示最终结果
-            c1, c2, c3 = st.columns(3)
-            c1.metric("P90 EUR (保守)", f"{p90:.2f} 亿方")
-            c2.metric("P50 EUR (中值)", f"{p50:.2f} 亿方")
-            c3.metric("P10 EUR (乐观)", f"{p10:.2f} 亿方")
-
-else:
-    st.info("请在左侧栏上传数据文件以启动预测流程。")
+    ### 下一步建议
+    * 导入更丰富的样本库，引入 **SHAP 解释器**，以可视化展示每个参数对具体井位产能的影响方向（正向还是负向）。
+    * 在生产环境部署时，建议使用 `joblib` 将训练好的 `model` 文件导出，实现线上推理。
+    """)
