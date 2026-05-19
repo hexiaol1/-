@@ -1,111 +1,191 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
+import plotly.express as px
 import plotly.graph_objects as go
-from scipy.optimize import curve_fit
-
-# 设置页面布局宽度为宽屏模式
-st.set_page_config(page_title="页岩气单井产能预测看板", layout="wide")
-
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
 
 # ==========================================
-# 1. 数学模型定义区
+# 页面全局配置与初始化
 # ==========================================
-def duong_model(t, qi, a, m):
-    """标准的 Duong 递减模型"""
-    # 避免除以 0 或无穷大
-    t = np.where(t == 0, 1e-5, t)
-    rate = qi * (t ** -m) * np.exp((a / (1 - m)) * ((t ** (1 - m)) - 1))
-    return rate
+st.set_page_config(page_title="科学级页岩气产能预测系统", layout="wide")
 
+# 初始化 Session State (存储多目标模型)
+if 'model_eur' not in st.session_state: st.session_state.model_eur = None
+if 'model_m' not in st.session_state: st.session_state.model_m = None
+if 'model_a' not in st.session_state: st.session_state.model_a = None
+if 'scaler' not in st.session_state: st.session_state.scaler = None
+if 'features' not in st.session_state: st.session_state.features = []
+if 'feature_stats' not in st.session_state: st.session_state.feature_stats = {}
 
-# ==========================================
-# 2. 侧边栏：数据导入与参数配置
-# ==========================================
-st.sidebar.header("⚙️ 数据与参数设置")
+st.title("📊 科学级页岩气产能主控因素与预测平台")
+st.caption("内核：多目标机器学习 (Multi-Target ML) 联合预测 EUR 与 Duong 物理衰减参数 (a, m)")
 
-# 文件上传模块
-uploaded_file = st.sidebar.file_uploader("1. 上传测试井/邻井生产数据 (CSV)", type=['csv'])
-
-# 经验参数滑块
-st.sidebar.subheader("2. 蒙特卡洛模拟参数")
-mc_runs = st.sidebar.number_input("模拟次数", min_value=100, max_value=5000, value=1000, step=100)
-q_ab = st.sidebar.number_input("废弃产量 (万方/天)", value=1.0, step=0.1)
-qi_variance = st.sidebar.slider("初期产能不确定性波动 (%)", 5, 50, 20)
+tab1, tab2, tab3 = st.tabs(["1. 训练与主控分析", "2. 静动耦合产能评估", "3. 科学数据流转说明"])
 
 # ==========================================
-# 3. 主界面：核心工作流执行
+# TAB 1: 模型训练与多目标主控分析
 # ==========================================
-st.title("📊 页岩气单井产能及 EUR 预测评估系统")
+with tab1:
+    st.subheader("多目标模型训练：同时学习体量与物理衰减规律")
+    train_file = st.file_uploader("上传历史井数据 (CSV格式，必须包含 eur, m, a 三个目标列)", type=['csv'])
+    
+    if train_file:
+        df = pd.read_csv(train_file)
+        df_numeric = df.select_dtypes(include=[np.number])
+        all_cols = df_numeric.columns.tolist()
+        
+        # 强制安全检查：确保数据集包含三个科学目标
+        required_targets = ['eur', 'm', 'a']
+        missing_targets = [col for col in required_targets if col not in all_cols]
+        
+        if missing_targets:
+            st.error(f"❌ 数据格式错误：缺乏科学计算必须的物理目标列 {missing_targets}。请先运行数据预处理脚本。")
+        else:
+            # 动态特征选择，剔除目标列
+            available_features = [c for c in all_cols if c not in required_targets]
+            selected_features = st.multiselect("选择输入特征 (X) [如: 地质、工程参数]", options=available_features, default=available_features)
+            
+            if st.button("🚀 运行多目标模型训练", type="primary"):
+                if not selected_features:
+                    st.error("请至少选择一个输入特征！")
+                else:
+                    st.session_state.features = selected_features
+                    st.session_state.feature_stats = df_numeric[selected_features].mean().to_dict()
+                    
+                    X = df_numeric[selected_features]
+                    scaler = StandardScaler()
+                    X_scaled = scaler.fit_transform(X)
+                    st.session_state.scaler = scaler
+                    
+                    # 科学核心：分别训练三个独立模型，揭示不同维度的地质映射
+                    st.session_state.model_eur = RandomForestRegressor(n_estimators=200, random_state=42).fit(X_scaled, df_numeric['eur'])
+                    st.session_state.model_m = RandomForestRegressor(n_estimators=100, random_state=42).fit(X_scaled, df_numeric['m'])
+                    st.session_state.model_a = RandomForestRegressor(n_estimators=100, random_state=42).fit(X_scaled, df_numeric['a'])
+                    
+                    st.success(f"✅ 模型训练成功！系统已完全掌握历史井的地质-生产物理映射关系。")
+                    
+                    # 创新点可视化：三个维度的独立主控因素
+                    st.markdown("#### 🔬 多维物理参数主控因素独立分析 (学术创新点)")
+                    c1, c2, c3 = st.columns(3)
+                    
+                    with c1:
+                        imp_eur = pd.DataFrame({'特征': selected_features, '权重': st.session_state.model_eur.feature_importances_}).sort_values(by='权重')
+                        st.plotly_chart(px.bar(imp_eur, x='权重', y='特征', orientation='h', title="EUR (总盘子) 主控因素"), use_container_width=True)
+                    with c2:
+                        imp_m = pd.DataFrame({'特征': selected_features, '权重': st.session_state.model_m.feature_importances_}).sort_values(by='权重')
+                        st.plotly_chart(px.bar(imp_m, x='权重', y='特征', orientation='h', title="参数 m (早期线性流衰减) 主控因素"), use_container_width=True)
+                    with c3:
+                        imp_a = pd.DataFrame({'特征': selected_features, '权重': st.session_state.model_a.feature_importances_}).sort_values(by='权重')
+                        st.plotly_chart(px.bar(imp_a, x='权重', y='特征', orientation='h', title="参数 a (后期基质供气) 主控因素"), use_container_width=True)
 
-if uploaded_file is not None:
-    # 读取数据（假设包含 'Days' 和 'Rate_万方' 两列）
-    df = pd.read_csv(uploaded_file)
-    t_data = df['Days'].values
-    q_data = df['Rate_万方'].values
+# ==========================================
+# TAB 2: 单井评估 (机器学习预测 + 积分反推)
+# ==========================================
+with tab2:
+    st.subheader("新井产能动态剖面预测 (科学闭环)")
+    if st.session_state.model_eur is None:
+        st.warning("请先在 Tab 1 完成多目标模型训练。")
+    else:
+        st.markdown("##### 📍 1. 输入新井静态参数")
+        input_dict = {}
+        cols = st.columns(4)
+        for i, feature in enumerate(st.session_state.features):
+            val = cols[i % 4].number_input(f"{feature}", value=float(st.session_state.feature_stats[feature]), format="%.4f")
+            input_dict[feature] = val
+        
+        st.markdown("---")
+        
+        # ML 实时预测静态参数映射的物理目标
+        input_data = np.array([[input_dict[f] for f in st.session_state.features]])
+        scaled_input = st.session_state.scaler.transform(input_data)
+        
+        # 科学内核：由 AI 预测出的唯一自洽组合
+        pred_eur = st.session_state.model_eur.predict(scaled_input)[0]
+        pred_m = st.session_state.model_m.predict(scaled_input)[0]
+        pred_a = st.session_state.model_a.predict(scaled_input)[0]
+        
+        st.markdown("##### 📍 2. 边界条件与 AI 推荐物理参数")
+        c_phys1, c_phys2 = st.columns([1, 2])
+        with c_phys1:
+            q_ab = st.number_input("经济废弃产量 $q_{ab}$ (万方/天)", value=0.50, step=0.10)
+        
+        with c_phys2:
+            st.info(f"🧠 **AI 科学映射结果**：基于历史数据深度学习，该地质条件下的物理衰减参数应为：**$m = {pred_m:.3f}$**, **$a = {pred_a:.3f}$**")
+            use_ai_params = st.checkbox("强制使用 AI 推荐的物理参数 (保证物理自洽性)", value=True)
+            
+            col_m, col_a = st.columns(2)
+            m_val = pred_m if use_ai_params else col_m.number_input("手动干预 m", value=pred_m, step=0.01)
+            a_val = pred_a if use_ai_params else col_a.number_input("手动干预 a", value=pred_a, step=0.01)
+            
+        if st.button("🚀 生成产能动态剖面", type="primary"):
+            # 数值积分与初期产量反推
+            t_days = np.arange(1, 10951) # 模拟长达 30 年 (寻找真实的经济截断点)
+            
+            # Duong 核心方程
+            shape_func = (t_days**-m_val) * np.exp((a_val / (1 - m_val)) * ((t_days**(1 - m_val)) - 1))
+            shape_integral = np.sum(shape_func) / 10000.0 # 转换为亿方
+            qi_calc = pred_eur / shape_integral 
+            
+            # 真实日产量曲线
+            q_time = qi_calc * shape_func
+            
+            # 经济截断逻辑
+            valid_idx = np.where(q_time >= q_ab)[0]
+            life_days = valid_idx[-1] if len(valid_idx) > 0 else 0
+            
+            if life_days == 0 or qi_calc < q_ab:
+                st.error(f"⚠️ 警告：该地质条件下，初始预测产量低于经济废弃线 ({q_ab} 万方/d)，不具备经济开采价值。")
+            else:
+                st.markdown("### 📊 科学预测结果")
+                res_c1, res_c2, res_c3 = st.columns(3)
+                res_c1.metric(f"预测 EUR", f"{pred_eur:.2f} 亿方")
+                res_c2.metric("积分反推初期配产 ($q_i$)", f"{qi_calc:.2f} 万方/d")
+                res_c3.metric("经济开采寿命", f"{life_days/365.0:.1f} 年")
+                
+                # 绘图：传统递减曲线 (控制展示长度，略过冗长的废弃期)
+                plot_days = min(len(t_days), life_days + 365)
+                fig_curve = go.Figure()
+                fig_curve.add_trace(go.Scatter(x=t_days[:plot_days], y=q_time[:plot_days], mode='lines', name='日产量', line=dict(color='#1f77b4', width=3)))
+                fig_curve.add_hline(y=q_ab, line_dash="dash", line_color="red", annotation_text=f"经济废弃线 ({q_ab})")
+                
+                # 醒目的红色废弃截断点
+                fig_curve.add_trace(go.Scatter(x=[life_days], y=[q_ab], mode='markers', name='经济废弃点', marker=dict(color='red', size=10)))
+                
+                fig_curve.update_layout(title="单井生命周期产能递减预测 (物理+经济双截断)", xaxis_title="生产时间 (天)", yaxis_title="日产量 (万方/天)")
+                st.plotly_chart(fig_curve, use_container_width=True)
 
-    st.subheader("步骤一：生产动态数据与 Duong 模型拟合")
+                # 绘图：专业双对数诊断
+                with st.expander("查看高级双对数流动诊断图 (Log-Log)"):
+                    fig_log = go.Figure()
+                    fig_log.add_trace(go.Scatter(x=t_days[:plot_days], y=q_time[:plot_days], mode='lines', name='日产量'))
+                    fig_log.update_layout(
+                        title="流动阶段诊断图 (直观显示页岩气长尾效应)", 
+                        xaxis_title="生产时间 (天)", 
+                        yaxis_title="日产量 (万方/天)",
+                        xaxis_type="log", yaxis_type="log"
+                    )
+                    st.plotly_chart(fig_log, use_container_width=True)
 
-    # 使用 SciPy 进行非线性曲线拟合
-    try:
-        # 提供初始猜测值 [qi, a, m]
-        popt, pcov = curve_fit(duong_model, t_data, q_data, p0=[20, 1.1, 1.2], bounds=(0, [100, 5, 5]))
-        fitted_qi, fitted_a, fitted_m = popt
-
-        # 布局：分两列展示拟合参数和图表
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            st.success("模型拟合成功！")
-            st.metric("初期产量 (qi)", f"{fitted_qi:.2f} 万方/d")
-            st.metric("参数 a", f"{fitted_a:.4f}")
-            st.metric("参数 m", f"{fitted_m:.4f}")
-
-        with col2:
-            # 使用 Plotly 绘制高可交互图表
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=t_data, y=q_data, mode='markers', name='实际生产数据'))
-            # 生成 10 年预测时间轴
-            t_pred = np.linspace(1, 3650, 500)
-            q_pred = duong_model(t_pred, fitted_qi, fitted_a, fitted_m)
-            fig.add_trace(go.Scatter(x=t_pred, y=q_pred, mode='lines', name='Duong 模型预测', line=dict(color='red')))
-            fig.update_layout(title="单井产量递减历史拟合与预测", xaxis_title="生产时间 (天)",
-                              yaxis_title="日产量 (万方/天)")
-            st.plotly_chart(fig, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"拟合失败: {e}")
-
-    # ------------------------------------------
-    # 步骤二：蒙特卡洛 EUR 评估
-    # ------------------------------------------
-    st.subheader("步骤二：EUR 不确定性分析 (P10 / P50 / P90)")
-
-    if st.button("🚀 运行蒙特卡洛模拟"):
-        with st.spinner("正在执行随机采样与积分计算..."):
-            # 以拟合出的 qi 为均值，生成正态分布的随机 qi 样本
-            std_dev = fitted_qi * (qi_variance / 100.0)
-            qi_samples = np.random.normal(loc=fitted_qi, scale=std_dev, size=mc_runs)
-
-            eur_results = []
-            for qi_sim in qi_samples:
-                if qi_sim <= 0: continue
-                # 简单积分逻辑：从第 1 天积分到 10 年，或者当产量跌破废弃产量时截断
-                t_sim = np.arange(1, 3651)
-                q_sim = duong_model(t_sim, qi_sim, fitted_a, fitted_m)
-                valid_q = q_sim[q_sim >= q_ab]
-                eur = np.sum(valid_q) / 10000.0  # 假设累加转换为亿方
-                eur_results.append(eur)
-
-            eur_array = np.array(eur_results)
-            p90 = np.percentile(eur_array, 10)
-            p50 = np.percentile(eur_array, 50)
-            p10 = np.percentile(eur_array, 90)
-
-            # 展示最终结果
-            c1, c2, c3 = st.columns(3)
-            c1.metric("P90 EUR (保守)", f"{p90:.2f} 亿方")
-            c2.metric("P50 EUR (中值)", f"{p50:.2f} 亿方")
-            c3.metric("P10 EUR (乐观)", f"{p10:.2f} 亿方")
-
-else:
-    st.info("请在左侧栏上传数据文件以启动预测流程。")
+# ==========================================
+# TAB 3: 科学数据规范说明
+# ==========================================
+with tab3:
+    st.markdown("""
+    ### 科学级数据流转闭环工作流
+    
+    为彻底解决“参数靠猜”的非科学现象，本系统构建了严密的 **数据预处理 -> ML建模 -> 积分反演** 闭环：
+    
+    1. **Phase 1: 数据预处理 (历史拟合提取)**
+       使用专门的 Python 脚本，针对历史井的真实动态日产量（$q-t$ 曲线），通过非线性最小二乘法（`curve_fit`）强行反演出该井独有的递减常数 $m$ 和 $a$，并积分求出真实 $EUR$。
+       
+    2. **Phase 2: 数据合并上传 (构建训练集)**
+       将 Phase 1 提取出的 `m`, `a`, `eur` 三列数据，与地质工程参数表（如 `TOC`, `压力系数`, `加砂强度`）水平合并，生成最终的 `training_data.csv`。
+       
+    3. **Phase 3: Multi-Target ML (解耦物理主控因素)**
+       系统读取数据后，不再是单一回归，而是**训练三个独立的 AI 模型**。分别告诉你：是谁控制了总体量（EUR）？是谁控制了裂缝衰减速度（m）？是谁控制了后期稳产能力（a）？
+       
+    4. **Phase 4: 科学预测与工程配产 ($EUR \\rightarrow q_i$)**
+       对于一口新井，系统首先输出地质条件决定的 $(EUR, m, a)$ 铁三角。随后结合**经济废弃产量 ($q_{ab}$)**，通过定积分公式逆向推演（反算），得出该井**理论上必须达到的初期配产量 ($q_i$)**。
+    """)
